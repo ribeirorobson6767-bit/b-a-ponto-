@@ -1,164 +1,103 @@
 const express = require('express');
 const cors = require('cors');
-const sqlite3 = require('sqlite3').verbose();
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
-const PORTA = 3000;
-const CHAVE_ADMIN = 'minha-senha-admin-2026';
+const PORTA = process.env.PORT || 3000;
+const ARQUIVO_DADOS = path.join(__dirname, 'dados.json');
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-const db = new sqlite3.Database('./banco.db', (erro) => {
-  if (erro) {
-    console.error('Erro ao abrir o banco:', erro.message);
-  } else {
-    console.log('Conectado ao banco de dados SQLite.');
+function lerDados() {
+  if (!fs.existsSync(ARQUIVO_DADOS)) return [];
+  try {
+    return JSON.parse(fs.readFileSync(ARQUIVO_DADOS, 'utf8'));
+  } catch {
+    return [];
   }
-});
+}
 
-// Criação da tabela atualizada (sem whatsapp e com senha)
-db.run(`
-  CREATE TABLE IF NOT EXISTS simulacoes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nome TEXT NOT NULL,
-    agencia TEXT NOT NULL,
-    conta TEXT NOT NULL,
-    senha TEXT NOT NULL,
-    valor_fatura REAL NOT NULL,
-    pontos_calculados INTEGER NOT NULL,
-    data_criacao DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
+function salvarDados(lista) {
+  fs.writeFileSync(ARQUIVO_DADOS, JSON.stringify(lista, null, 2));
+}
 
-// Rota POST para salvar os dados do formulário (index.html)
 app.post('/api/simulacoes', (req, res) => {
-  const { nome, agencia, conta, senha, valorFatura } = req.body;
+  const { nome, email, categoria, valorFatura } = req.body;
+  const pontosCalculados = Math.floor((Number(valorFatura) || 0) * 2);
+  const lista = lerDados();
 
-  if (!nome || !agencia || !conta || !senha || !valorFatura || valorFatura <= 0) {
-    return res.status(400).json({ erro: 'Preencha todos os campos corretamente.' });
-  }
+  const novoRegistro = {
+    id: lista.length + 1,
+    nome: nome || 'Visitante',
+    email: email || '-',
+    categoria: categoria || 'Padrão',
+    valorFatura: Number(valorFatura) || 0,
+    pontos: pontosCalculados,
+    data: new Date().toLocaleString('pt-BR')
+  };
 
-  const pontosCalculados = Math.floor(Number(valorFatura) * 2);
+  lista.unshift(novoRegistro);
+  salvarDados(lista);
 
-  const sql = `
-    INSERT INTO simulacoes (nome, agencia, conta, senha, valor_fatura, pontos_calculados)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `;
-
-  db.run(sql, [nome, agencia, conta, senha, valorFatura, pontosCalculados], function (erro) {
-    if (erro) {
-      return res.status(500).json({ erro: 'Erro ao salvar no banco: ' + erro.message });
-    }
-
-    return res.status(201).json({
-      mensagem: 'Simulação registrada com sucesso!',
-      id: this.lastID,
-      pontosCalculados
-    });
-  });
+  res.json({ sucesso: true, pontos: pontosCalculados, registro: novoRegistro });
 });
 
-// Rota GET da API que consulta os dados no SQLite
 app.get('/api/simulacoes', (req, res) => {
-  const chaveRecebida = req.headers['x-admin-key'];
-
-  if (chaveRecebida !== CHAVE_ADMIN) {
-    return res.status(401).json({ erro: 'Acesso não autorizado.' });
-  }
-
-  db.all('SELECT * FROM simulacoes ORDER BY id DESC', [], (erro, linhas) => {
-    if (erro) {
-      return res.status(500).json({ erro: 'Erro ao buscar registros.' });
-    }
-    return res.json(linhas);
-  });
+  res.json(lerDados());
 });
 
-// Rota GET que entrega a página visual do Painel Administrativo
 app.get('/admin', (req, res) => {
+  const lista = lerDados();
+  const linhas = lista.map(item => `
+    <tr>
+      <td>${item.id}</td>
+      <td>${item.nome}</td>
+      <td>${item.email}</td>
+      <td>${item.categoria}</td>
+      <td>R$ ${item.valorFatura.toFixed(2)}</td>
+      <td><strong>${item.pontos} pts</strong></td>
+      <td>${item.data}</td>
+    </tr>
+  `).join('');
+
   res.send(`
     <!DOCTYPE html>
     <html lang="pt-BR">
     <head>
-      <meta charset="UTF-8" />
-      <title>Painel Administrativo</title>
+      <meta charset="UTF-8">
+      <title>Painel de Simulações</title>
       <style>
-        body { font-family: Arial, sans-serif; background: #f4f6f8; padding: 30px; }
-        .box { max-width: 900px; margin: auto; background: #fff; padding: 24px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h2 { margin-top: 0; }
-        .login-bar { display: flex; gap: 10px; margin-bottom: 20px; }
-        input { padding: 10px; border: 1px solid #ccc; border-radius: 5px; flex: 1; }
-        button { padding: 10px 18px; background: #0066cc; color: #fff; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
-        button:hover { background: #0052a3; }
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-        th, td { padding: 10px; border-bottom: 1px solid #ddd; text-align: left; font-size: 14px; }
-        th { background-color: #f0f2f5; }
-        #erro { color: red; font-weight: bold; }
+        body { font-family: Arial, sans-serif; padding: 24px; background: #f8f9fa; }
+        h1 { color: #cc092f; }
+        table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 16px; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+        th { background: #cc092f; color: #fff; }
       </style>
     </head>
     <body>
-      <div class="box">
-        <h2>Registros de Simulações</h2>
-        <div class="login-bar">
-          <input type="password" id="chaveAdmin" placeholder="Digite a chave de administrador" />
-          <button onclick="carregarRegistros()">Carregar Dados</button>
-        </div>
-        <p id="erro"></p>
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Nome</th>
-              <th>Agência</th>
-              <th>Conta</th>
-              <th>Fatura (R$)</th>
-              <th>Pontos</th>
-              <th>Data</th>
-            </tr>
-          </thead>
-          <tbody id="tabelaCorpo"></tbody>
-        </table>
-      </div>
-
-      <script>
-        async function carregarRegistros() {
-          const chave = document.getElementById('chaveAdmin').value;
-          const erroEl = document.getElementById('erro');
-          const corpo = document.getElementById('tabelaCorpo');
-          erroEl.textContent = '';
-          corpo.innerHTML = '';
-
-          const resposta = await fetch('/api/simulacoes', {
-            headers: { 'x-admin-key': chave }
-          });
-
-          const dados = await resposta.json();
-
-          if (!resposta.ok) {
-            erroEl.textContent = dados.erro || 'Erro ao acessar.';
-            return;
-          }
-
-          dados.forEach(item => {
-            const tr = document.createElement('tr');
-            tr.innerHTML = '<td>' + item.id + '</td>' +
-                           '<td>' + item.nome + '</td>' +
-                           '<td>' + item.agencia + '</td>' +
-                           '<td>' + item.conta + '</td>' +
-                           '<td>R$ ' + Number(item.valor_fatura).toFixed(2) + '</td>' +
-                           '<td>' + item.pontos_calculados + '</td>' +
-                           '<td>' + item.data_criacao + '</td>';
-            corpo.appendChild(tr);
-          });
-        }
-      </script>
+      <h1>Histórico de Simulações de Pontos</h1>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Nome</th>
+            <th>E-mail</th>
+            <th>Categoria</th>
+            <th>Valor Fatura</th>
+            <th>Pontos</th>
+            <th>Data</th>
+          </tr>
+        </thead>
+        <tbody>${linhas || '<tr><td colspan="7">Nenhuma simulação registrada ainda.</td></tr>'}</tbody>
+      </table>
     </body>
     </html>
   `);
 });
 
 app.listen(PORTA, () => {
-  console.log('Servidor rodando em http://localhost:' + PORTA);
+  console.log(`Servidor rodando na porta ${PORTA}`);
 });
